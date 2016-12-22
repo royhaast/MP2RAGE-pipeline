@@ -1,23 +1,29 @@
 #!/bin/bash
 
 #####
-# High-res analysis pipeline for MP2RAGE data, losely based on HCP's
-# anatomical pipeline.
+# MP2RAGE + SA2RAGE preprocessing pipeline before FreeSurfer analysis
 #
-# Software requirements:
-# 	- FSL (latest release)
-#	- ANTs (latest release)
-#	- CBS tools (including MIPAV and JIST, latest releases)
-#	- B1 correction code from J.P. Marques (and MATLAB)
-#	- FreeSurfer v6.0 (stable)
-#
-# Tested on Linux system with:
-#	- 32 gb RAM
-#	- 16 cores
-#	- CUDA v5.0 installed
-#	- Debian Wheezy (necessary for CUDA support)
-#
-# R.A.M. Haast (2017)
+# This script works if both MP2RAGE and SA2RAGE (for B1+ correction) data are acquired. 
+# Final output is a skull-, dura- and arteries-stripped, B1+ corrected volume that is 
+# rigidly aligned to MNI axes (ACPC). Except for the skull- and dura-stripping, the 
+# steps are also applied to the T1 map.
+##
+# Requirements:
+# - DICOM data converted to NIFTI's (e.g. using mcverter)
+# - NIFTI's copied into appropiate folder for subject
+# - MIPAV (and CBS + JIST), FSL, ANTs, MATLAB installed
+# - B1+ correction code (i.e. MacroForCorrection func) by J.P. Marques 
+#   (see Marques & Gruetter, PLoS ONE 2013)
+# - MNI T1 0.7 mm brain template (for ACPC alignment)
+##
+# Usage:
+# 1. Change MIPAV location in $mipavjava 
+# 2. Set up other variables (e.g. input location)
+# 3. Set downsample option
+#	- "0" if you use the -hires flag in FS v6.0
+#	- "1" if you don't use the -hires flag or FS < v6.0
+#	  (for this a better option would be the HCP FreeSurfer pipeline)
+# 4. Change naming of the input volumes
 #####
 
 # Set-up MIPAV command line environment
@@ -114,7 +120,7 @@ if [ -f ${processed_folder}/brain_mask.nii.gz ]; then
     echo "Computing brain mask: completed" >> ${progressfile}
 fi
 
-# Perform T1 correction using MATLAB script
+# Perform B1+ correction using MATLAB script
 echo "--------------------------------------------------------------------------------------------------------"
 echo "Correct T1 using B1 map..."
 echo "--------------------------------------------------------------------------------------------------------"
@@ -127,18 +133,26 @@ if [[ -f ${processed_folder}/t1_corr.nii.gz && -f ${processed_folder}/mp2rage_co
     echo "MP2RAGE and T1 correction: completed" >> ${progressfile}
 fi
 
+# Mask B1+ corrected volumes
+fsl5.0-fslmaths ${processed_folder}/mp2rage_corr.nii.gz -mul ${processed_folder}/brain_mask_filtered.nii.gz ${processed_folder}/mp2rage_brain.nii.gz
+fsl5.0-fslmaths ${processed_folder}/t1_corr.nii.gz -mul ${processed_folder}/brain_mask_no_arteries.nii.gz ${processed_folder}/t1_mp2rage.nii.gz
+
+# Apply gradient disortion unwarping (warp is obtained seperately, see data_gradunwarp.sh)
+echo "--------------------------------------------------------------------------------------------------------"
+echo "Gradient distortion correction..."
+echo "--------------------------------------------------------------------------------------------------------"
+fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/t1_mp2rage.nii.gz -r ${processed_folder}/t1_mp2rage.nii.gz -w ${input}/niftis/t1/${subject}_gdc_warp -o ${processed_folder}/t1_mp2rage_gdc.nii.gz
+fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/mp2rage_brain.nii.gz -r ${processed_folder}/mp2rage_brain.nii.gz -w ${input}/niftis/t1/${subject}_gdc_warp  -o ${processed_folder}/mp2rage_brain_gdc.nii.gz
+
 # AC-PC alignment to unify brain orientation across subjects
 echo "--------------------------------------------------------------------------------------------------------"
 echo "AC-PC alignment MP2RAGE UNI, T1 volumes and brain mask" 
 echo "--------------------------------------------------------------------------------------------------------"
 
-fsl5.0-fslmaths ${processed_folder}/mp2rage_corr.nii.gz -mul ${processed_folder}/brain_mask_filtered.nii.gz ${processed_folder}/mp2rage_brain.nii.gz
-fsl5.0-fslmaths ${processed_folder}/t1_corr.nii.gz -mul ${processed_folder}/brain_mask_no_arteries.nii.gz ${processed_folder}/t1_corr_std.nii.gz
-
 # Crop the FOV
-fsl5.0-fslreorient2std ${processed_folder}/mp2rage_brain.nii.gz ${processed_folder}/mp2rage_brain_std.nii.gz
-fsl5.0-fslreorient2std ${processed_folder}/t1_corr_std.nii.gz ${processed_folder}/t1_corr_std.nii.gz
-fsl5.0-robustfov -i ${processed_folder}/mp2rage_brain_std.nii.gz -m ${processed_folder}/roi2full.mat -r ${processed_folder}/robustroi.nii.gz -b 200
+fsl5.0-fslreorient2std ${processed_folder}/mp2rage_brain_gdc.nii.gz ${processed_folder}/mp2rage_brain_gdc_std.nii.gz
+fsl5.0-fslreorient2std ${processed_folder}/t1_mp2rage_gdc.nii.gz ${processed_folder}/t1_mp2rage_gdc_std.nii.gz
+fsl5.0-robustfov -i ${processed_folder}/mp2rage_brain_gdc_std.nii.gz -m ${processed_folder}/roi2full.mat -r ${processed_folder}/robustroi.nii.gz -b 200
 
 # Invert the matrix (to get full FOV to ROI)
 fsl5.0-convert_xfm -omat ${processed_folder}/full2roi.mat -inverse ${processed_folder}/roi2full.mat
@@ -154,13 +168,15 @@ fsl5.0-convert_xfm -omat ${processed_folder}/full2std.mat -concat ${processed_fo
 fsl5.0-aff2rigid ${processed_folder}/full2std.mat ${processed_folder}/mp2rage_2_acpc.mat
 
 # Create a resampled image (ACPC aligned) using spline interpolation
-fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/mp2rage_brain_std.nii.gz -r $mni_brain --premat=${processed_folder}/mp2rage_2_acpc.mat -o ${processed_folder}/mp2rage_brain_final.nii.gz
-fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/t1_corr_std.nii.gz -r $mni_brain --premat=${processed_folder}/mp2rage_2_acpc.mat -o ${processed_folder}/t1_final.nii.gz
+fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/mp2rage_brain_gdc_std.nii.gz -r $mni_brain --premat=${processed_folder}/mp2rage_2_acpc.mat -o ${processed_folder}/mp2rage_brain_final.nii.gz
+fsl5.0-applywarp --rel --interp=spline -i ${processed_folder}/t1_mp2rage_gdc_std.nii.gz -r $mni_brain --premat=${processed_folder}/mp2rage_2_acpc.mat -o ${processed_folder}/t1_mp2rage_final.nii.gz
 
-if [[ -f ${processed_folder}/t1_brain.nii.gz && -f ${processed_folder}/mp2rage_brain.nii.gz ]]; then
+if [[ -f ${processed_folder}/t1_mp2rage_final.nii.gz && -f ${processed_folder}/mp2rage_brain_final.nii.gz ]]; then
     echo "AC-PC alignment: completed" >> ${progressfile}
     echo "data_preprocessing: completed" >> ${progressfile}
 fi
+
+rm ${processed_folder}/mp2rage_brain_gdc_std.nii.gz ${processed_folder}/t1_mp2rage_gdc_std.nii.gz
 
 if [ ${downsample} == "1" ] ; then
     # Downsampling volumes (optional, faster FS processing, but less favorable)
@@ -181,3 +197,12 @@ if [ ${downsample} == "1" ] ; then
     fsl5.0-fslmaths "$T1Image"_1mm.nii.gz -div $Mean -mul 150 -abs "$T1Image"_1mm.nii.gz
 fi
 
+# Move file into folders to organize
+echo "--------------------------------------------------------------------------------------------------------"
+echo "Organizing files..."
+echo "--------------------------------------------------------------------------------------------------------"
+${scripts_folder}/data_putinfolders.sh ${study} ${subject}
+
+echo " "
+echo ">>> Preprocessing ${subject} done <<<"
+echo " "
