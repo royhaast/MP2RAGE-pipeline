@@ -24,6 +24,8 @@
 #	- "1" if you don't use the -hires flag or FS < v6.0
 #	  (for this a better option would be the HCP FreeSurfer pipeline)
 # 4. Change naming of the input volumes
+# 5. Make script executable (chmod 777) and run
+#	e.g. ./data_preprocessing <STUDY> <SUBJECT_ID>
 #####
 
 # Set-up MIPAV command line environment
