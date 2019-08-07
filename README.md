@@ -27,3 +27,5 @@ anatomical pipeline.
 	- Debian Wheezy (necessary for CUDA support)
 
 *Total processing time per subject: 8-9 hrs*
+
+[![DOI](https://zenodo.org/badge/77048534.svg)](https://zenodo.org/badge/latestdoi/77048534)
